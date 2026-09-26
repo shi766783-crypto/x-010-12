@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { planStorage } from '../services/storage'
-import { generateLuggageTemplate, getDestinationType } from '../services/luggage'
+import {
+  generateLuggageTemplate,
+  getDestinationType,
+  normalizeLuggageItem,
+  normalizeQuantity,
+  parseQuantityFromName,
+} from '../services/luggage'
 import { generateDefaultTodos } from '../services/todo'
 import { computeAchievements, TOTAL_ACHIEVEMENTS } from '../services/achievements'
 import { computeDashboardStats, computeMemberLeaderboard } from '../services/stats'
@@ -31,6 +37,20 @@ export const useTravelStore = defineStore('travel', {
     // ===== 持久化 =====
     load() {
       this.plans = planStorage.read([])
+      // 迁移旧数据：名称中带 “×N” 的物品补独立数量字段
+      let migrated = false
+      this.plans.forEach((plan) => {
+        ;(plan.luggage || []).forEach((list) => {
+          list.items = (list.items || []).map((raw) => {
+            const normalized = normalizeLuggageItem(raw)
+            if (normalized.name !== raw.name || normalized.quantity !== raw.quantity) {
+              migrated = true
+            }
+            return normalized
+          })
+        })
+      })
+      if (migrated) this.persist()
     },
     persist() {
       planStorage.write(this.plans)
@@ -115,11 +135,28 @@ export const useTravelStore = defineStore('travel', {
       if (target) target.packed = !target.packed
     },
 
-    addCustomItem(planId, memberId, name, category) {
+    setItemQuantity(planId, memberId, itemId, quantity) {
+      const plan = this.planById(planId)
+      if (!plan) return
+      const list = plan.luggage.find((l) => l.memberId === memberId)
+      const target = list?.items.find((i) => i.id === itemId)
+      if (target) target.quantity = normalizeQuantity(quantity)
+    },
+
+    addCustomItem(planId, memberId, name, category, quantity = 1) {
       const plan = this.planById(planId)
       if (!plan) return
       const list = this._findLuggageList(plan, memberId)
-      list.items.push({ id: uid(), name, category, custom: true, packed: false })
+      // 名称中带乘号后缀（如 “袜子×3”）时优先按名称解析数量
+      const parsed = parseQuantityFromName(name)
+      list.items.push({
+        id: uid(),
+        name: parsed.name,
+        category,
+        custom: true,
+        packed: false,
+        quantity: parsed.quantity > 1 ? parsed.quantity : normalizeQuantity(quantity),
+      })
     },
 
     removeItem(planId, memberId, itemId) {

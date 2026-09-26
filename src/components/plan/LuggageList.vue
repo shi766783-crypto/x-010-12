@@ -2,7 +2,11 @@
 import { computed, ref } from 'vue'
 import { useTravelStore } from '../../stores/travel'
 import { LUGGAGE_CATEGORIES } from '../../constants'
-import { luggageCompletionRate } from '../../services/luggage'
+import {
+  luggageCompletionRate,
+  luggagePieceCounts,
+  normalizeQuantity,
+} from '../../services/luggage'
 import ProgressBar from '../common/ProgressBar.vue'
 
 const props = defineProps({
@@ -26,17 +30,29 @@ const grouped = computed(() =>
 )
 
 const rate = computed(() => luggageCompletionRate(list.value.items))
+const counts = computed(() => luggagePieceCounts(list.value.items))
 
 const showAdd = ref(false)
 const newName = ref('')
 const newCategory = ref(LUGGAGE_CATEGORIES[0])
+const newQuantity = ref(1)
 
 function addCustom() {
   const name = newName.value.trim()
   if (!name) return
-  store.addCustomItem(props.planId, props.memberId, name, newCategory.value)
+  store.addCustomItem(props.planId, props.memberId, name, newCategory.value, newQuantity.value)
   newName.value = ''
+  newQuantity.value = 1
   showAdd.value = false
+}
+
+function changeQuantity(item, delta) {
+  store.setItemQuantity(
+    props.planId,
+    props.memberId,
+    item.id,
+    normalizeQuantity(item.quantity) + delta
+  )
 }
 </script>
 
@@ -44,7 +60,10 @@ function addCustom() {
   <div class="luggage-list">
     <div class="luggage-head">
       <strong>{{ memberName }}</strong>
-      <span class="tag" :class="rate === 100 ? 'tag-green' : 'tag-blue'">{{ rate }}%</span>
+      <span class="head-right">
+        <span class="piece-count text-muted">{{ counts.packed }}/{{ counts.total }} 件</span>
+        <span class="tag" :class="rate === 100 ? 'tag-green' : 'tag-blue'">{{ rate }}%</span>
+      </span>
     </div>
 
     <ProgressBar :value="rate" :show-label="false" />
@@ -68,12 +87,28 @@ function addCustom() {
               <span class="item-name">{{ item.name }}</span>
               <span v-if="item.custom" class="item-custom">自定义</span>
             </label>
-            <button
-              type="button"
-              class="item-remove"
-              title="移除"
-              @click="store.removeItem(planId, memberId, item.id)"
-            >×</button>
+            <div class="item-side">
+              <div class="qty-stepper" title="数量">
+                <button
+                  type="button"
+                  class="qty-btn"
+                  :disabled="normalizeQuantity(item.quantity) <= 1"
+                  @click="changeQuantity(item, -1)"
+                >−</button>
+                <span class="qty-value">{{ normalizeQuantity(item.quantity) }}</span>
+                <button
+                  type="button"
+                  class="qty-btn"
+                  @click="changeQuantity(item, 1)"
+                >+</button>
+              </div>
+              <button
+                type="button"
+                class="item-remove"
+                title="移除"
+                @click="store.removeItem(planId, memberId, item.id)"
+              >×</button>
+            </div>
           </li>
         </ul>
       </div>
@@ -81,7 +116,15 @@ function addCustom() {
 
     <div class="add-custom">
       <template v-if="showAdd">
-        <input v-model="newName" class="input" placeholder="物品名称" @keyup.enter="addCustom" />
+        <input v-model="newName" class="input" placeholder="物品名称（可写 袜子×3）" @keyup.enter="addCustom" />
+        <input
+          v-model.number="newQuantity"
+          type="number"
+          min="1"
+          class="input qty-input"
+          title="数量"
+          @keyup.enter="addCustom"
+        />
         <select v-model="newCategory" class="select">
           <option v-for="c in LUGGAGE_CATEGORIES" :key="c" :value="c">{{ c }}</option>
         </select>
@@ -107,6 +150,16 @@ function addCustom() {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 8px;
+}
+
+.head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.piece-count {
+  font-size: 12px;
 }
 
 .groups {
@@ -155,6 +208,51 @@ function addCustom() {
   color: var(--text-muted);
 }
 
+.item-side {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qty-stepper {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px;
+}
+
+.qty-btn {
+  border: none;
+  background: transparent;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+}
+
+.qty-btn:hover:not(:disabled) {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.qty-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.qty-value {
+  min-width: 18px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .item-custom {
   font-size: 11px;
   color: var(--primary);
@@ -190,6 +288,11 @@ function addCustom() {
 .add-custom .input {
   flex: 1;
   min-width: 120px;
+}
+
+.add-custom .qty-input {
+  flex: none;
+  width: 72px;
 }
 
 .add-custom .select {
