@@ -1,6 +1,13 @@
 import { defineStore } from 'pinia'
 import { planStorage } from '../services/storage'
-import { generateLuggageTemplate, getDestinationType } from '../services/luggage'
+import {
+  clampItemQuantity,
+  generateLuggageTemplate,
+  getDestinationType,
+  itemPackedCount,
+  itemQuantity,
+  migratePlans,
+} from '../services/luggage'
 import { generateDefaultTodos } from '../services/todo'
 import { computeAchievements, TOTAL_ACHIEVEMENTS } from '../services/achievements'
 import { computeDashboardStats, computeMemberLeaderboard } from '../services/stats'
@@ -30,7 +37,10 @@ export const useTravelStore = defineStore('travel', {
   actions: {
     // ===== 持久化 =====
     load() {
-      this.plans = planStorage.read([])
+      // 读取后先做行李物品结构迁移（数量字段），有变更则立即落盘
+      const { plans, migrated } = migratePlans(planStorage.read([]))
+      this.plans = plans
+      if (migrated) this.persist()
     },
     persist() {
       planStorage.write(this.plans)
@@ -107,19 +117,52 @@ export const useTravelStore = defineStore('travel', {
       return list
     },
 
-    togglePack(planId, memberId, itemId) {
+    _findLuggageItem(planId, memberId, itemId) {
       const plan = this.planById(planId)
-      if (!plan) return
+      if (!plan) return null
       const list = plan.luggage.find((l) => l.memberId === memberId)
-      const target = list?.items.find((i) => i.id === itemId)
-      if (target) target.packed = !target.packed
+      return list?.items.find((i) => i.id === itemId) || null
     },
 
-    addCustomItem(planId, memberId, name, category) {
+    // 勾选切换：未全部打包则补满，否则清零
+    togglePack(planId, memberId, itemId) {
+      const target = this._findLuggageItem(planId, memberId, itemId)
+      if (!target) return
+      const qty = itemQuantity(target)
+      target.packedCount = itemPackedCount(target) >= qty ? 0 : qty
+    },
+
+    // 逐件调整已打包件数（自动限制在 0 ~ 数量 之间）
+    setPackedCount(planId, memberId, itemId, count) {
+      const target = this._findLuggageItem(planId, memberId, itemId)
+      if (!target) return
+      const qty = itemQuantity(target)
+      const n = Math.round(Number(count))
+      target.packedCount = Math.min(qty, Math.max(Number.isFinite(n) ? n : 0, 0))
+    },
+
+    // 修改物品数量；已打包件数超出新数量时同步收敛，完成率随响应式自动重算
+    setQuantity(planId, memberId, itemId, quantity) {
+      const target = this._findLuggageItem(planId, memberId, itemId)
+      if (!target) return
+      target.quantity = clampItemQuantity(quantity)
+      if ((Math.round(Number(target.packedCount)) || 0) > target.quantity) {
+        target.packedCount = target.quantity
+      }
+    },
+
+    addCustomItem(planId, memberId, name, category, quantity = 1) {
       const plan = this.planById(planId)
       if (!plan) return
       const list = this._findLuggageList(plan, memberId)
-      list.items.push({ id: uid(), name, category, custom: true, packed: false })
+      list.items.push({
+        id: uid(),
+        name,
+        category,
+        custom: true,
+        quantity: clampItemQuantity(quantity),
+        packedCount: 0,
+      })
     },
 
     removeItem(planId, memberId, itemId) {
